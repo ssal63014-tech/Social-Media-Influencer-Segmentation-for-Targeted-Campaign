@@ -1,0 +1,201 @@
+---
+title: 'Data Analysis Using R'
+author: "Saldi"
+date: "2024-10-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## List of Library Used
+```{r}
+library(tidyverse)
+library(dplyr)
+library(cluster)
+library(caret)
+library(rpart)
+library(pheatmap)
+library(ggplot2)
+library(factoextra)
+library(rpart.plot)
+```
+
+
+## Checking Data Characteristic
+```{r}
+data <- read.csv("demo_influencer_campaign_dataset.csv")
+
+str(data)
+```
+## Check Missing Values and Duplicate
+```{r}
+# Check for missing values in each column
+missing_values <- sapply(data, function(x) sum(is.na(x)))
+print(missing_values)
+
+# Check for duplicate rows
+duplicate_rows <- data[duplicated(data), ]
+print(nrow(duplicate_rows))
+```
+## Exploratory Data Analysis (EDA)
+### Data Correlation
+```{r}
+# Select numeric columns for correlation analysis and rename them for better readability
+numeric_data <- data %>%
+  select(cmp_total_engagement, cmp_campaign_cost, inf_follower_count, 
+         inf_engagement_rate, inf_post_frequency,  
+         inf_engagement_growth_rate, inf_average_reach) %>%
+  rename(
+    `Campaign Engagement` = cmp_total_engagement,
+    `Campaign Cost` = cmp_campaign_cost,
+    `Influencer Followers` = inf_follower_count,
+    `Influencer Engagement Rate` = inf_engagement_rate,
+    `Influencer Post Frequency` = inf_post_frequency,
+    `Influencer Engagement Growth Rate` = inf_engagement_growth_rate,
+    `Influencer Average Reach` = inf_average_reach
+  )
+
+# Compute the correlation matrix
+correlation_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Create the heatmap with a title and the renamed columns
+pheatmap(correlation_matrix, 
+         color = colorRampPalette(c("#FFF7BC", "#FDBB84", "#EF6548"))(50),  # Color palette
+         display_numbers = TRUE,                                  # Show correlation values
+         cluster_rows = FALSE,                                    # Disable row clustering
+         cluster_cols = FALSE,                                    # Disable column clustering
+         main = "Correlation Heatmap for Influencer Campaign Metrics") # Add a title
+```
+### Data Clustering
+```{r}
+# Select relevant columns for clustering (categorical and numeric)
+clustering_data <- data %>%
+  select(inf_influencer_tier, inf_audience_location, inf_audience_interests, inf_engagement_growth_rate)
+
+# Preprocess categorical variables
+clustering_data <- clustering_data %>%
+  mutate(
+    inf_influencer_tier = as.numeric(as.factor(inf_influencer_tier)),
+    inf_audience_location = as.numeric(as.factor(inf_audience_location)),
+    inf_audience_interests = as.numeric(as.factor(inf_audience_interests))
+  )
+
+# Scale the numeric variables to normalize
+clustering_data <- clustering_data %>%
+  mutate(across(where(is.numeric), scale))
+
+# Set seed for reproducibility
+set.seed(123)
+
+# Perform K-Means clustering with 3 clusters 
+kmeans_result <- kmeans(clustering_data, centers = 3, nstart = 25)
+
+# Add the cluster information to the original dataset
+data$cluster <- as.factor(kmeans_result$cluster)
+
+# Descriptive Statistics for Each Cluster
+# Get summary statistics for numeric variables in each cluster
+summary_by_cluster <- data %>%
+  group_by(cluster) %>%
+  summarise(
+    avg_engagement_growth = mean(inf_engagement_growth_rate, na.rm = TRUE),
+    avg_follower_count = mean(inf_follower_count, na.rm = TRUE),
+    avg_campaign_cost = mean(cmp_campaign_cost, na.rm = TRUE),
+    avg_campaign_engagement = mean(cmp_total_engagement, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+# View summary statistics for each cluster
+View(summary_by_cluster)
+
+# Visualizing the Clusters 
+fviz_cluster(kmeans_result, data = clustering_data, 
+             geom = "point",            
+             stand = FALSE,             
+             ellipse.type = "norm",     
+             ggtheme = theme_minimal()) +
+  labs(title = "K-Means Clustering of Influencers", 
+       x = "Cluster", y = "Influencers") +
+  scale_shape_manual(values = c(16, 17, 15)) +  
+  scale_color_manual(values = c("#FF6F61", "#33A1C9", "#FFD700")) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+```{r}
+# Influencer Tier Distribution by Cluster 
+ggplot(data, aes(x = inf_influencer_tier, fill = cluster)) +
+  geom_bar(position = "dodge") +
+  theme_minimal() +
+  labs(title = "Influencer Tier Distribution by Cluster", x = "Influencer Tier", y = "Count") +
+  scale_fill_manual(values = c("#FF6F61", "#33A1C9", "#FFD700")) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# Audience Location Distribution by Cluster
+ggplot(data, aes(x = inf_audience_location, fill = cluster)) +
+  geom_bar(position = "dodge") +
+  theme_minimal() +
+  labs(title = "Audience Location Distribution by Cluster", x = "Audience Location", y = "Count") +
+  scale_fill_manual(values = c("#FF6F61", "#33A1C9", "#FFD700")) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# Platform Use Distribution by Cluster
+ggplot(data, aes(x = cmp_platform_used, fill = cluster)) +
+  geom_bar(position = "dodge") +
+  theme_minimal() +
+  labs(title = "Platform Use Distribution by Cluster", x = "Platform", y = "Count") +
+  scale_fill_manual(values = c("#FF6F61", "#33A1C9", "#FFD700")) + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+### Machine-Learning Decision Tree Model
+```{r}
+# Assume a binary classification for high vs. low engagement
+# Create a binary variable for high vs. low engagement
+data$engagement_level <- ifelse(data$cmp_total_engagement > median(data$cmp_total_engagement), "High", "Low")
+
+# Convert engagement_level to factor
+data$engagement_level <- as.factor(data$engagement_level)
+
+# Select relevant features for the model
+model_data <- data %>% 
+  select(engagement_level, inf_platform, inf_influencer_tier, cmp_campaign_type)
+
+# Split data into training and test sets
+set.seed(123)
+trainIndex <- createDataPartition(model_data$engagement_level, p = 0.8, list = FALSE)
+train_data <- model_data[trainIndex, ]
+test_data <- model_data[-trainIndex, ]
+
+# Train the Decision Tree
+decision_tree <- rpart(engagement_level ~ ., data = train_data, 
+                       parms = list(split = "gini"))
+
+# Plot the Decision Tree with a title
+rpart.plot(decision_tree, main = "Decision Tree for Engagement Level Prediction")
+
+# Predict on test data
+tree_predictions <- predict(decision_tree, test_data, type = "class")
+
+# Confusion Matrix to evaluate the model
+confusionMatrix(tree_predictions, test_data$engagement_level)
+
+# Generate the confusion matrix
+conf_matrix <- confusionMatrix(tree_predictions, test_data$engagement_level)
+
+# Extract confusion matrix as a table
+confusion_data <- as.data.frame(conf_matrix$table)
+
+# Plot the confusion matrix using ggplot2
+ggplot(data = confusion_data, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), vjust = 1) +
+  scale_fill_gradient(low = "lightblue", high = "#33A1C9") +
+  labs(title = "Confusion Matrix (Accuracy: 0.838)", x = "Reference", y = "Prediction") + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
